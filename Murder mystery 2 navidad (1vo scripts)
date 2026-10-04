@@ -1,0 +1,632 @@
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+local farming = false
+local speed = 20
+local maxDistance = 120
+local noclipConnection
+local noclipOn = false
+local farmToken = 0
+local activeMovement = nil
+local joinedContainer
+local ignoredContainer
+local farmedAny = false
+local totalCoins = 0
+
+local killAuraActive = false
+local killAuraRange = 25
+local auraPart = nil
+
+local function getRoot()
+	local char = player.Character
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHumanoid()
+	local char = player.Character
+	return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function getCoinContainer()
+	local container = workspace:FindFirstChild("CoinContainer", true)
+	if not container then
+		for _, v in ipairs(workspace:GetChildren()) do
+			if v.Name:lower():find("coin") or v.Name:lower():find("container") then
+				container = v
+				break
+			end
+		end
+	end
+	return container
+end
+
+local function setNoclip(on)
+	if on == noclipOn then return end
+	noclipOn = on
+
+	if noclipConnection then
+		noclipConnection:Disconnect()
+		noclipConnection = nil
+	end
+
+	if on then
+		noclipConnection = RunService.Stepped:Connect(function()
+			local character = player.Character
+			if character then
+				for _, part in ipairs(character:GetChildren()) do
+					if part:IsA("BasePart") then
+						part.CanCollide = false
+					end
+				end
+			end
+		end)
+	end
+end
+
+local function isCoin(obj)
+	if not obj:IsA("BasePart") then return false end
+	local name = obj.Name:lower()
+	return name == "coin"
+		or name == "coin_server"
+		or name == "coincontainer"
+		or name:find("coin")
+		or name:find("snowball")
+		or name:find("candy")
+		or name:find("drop")
+end
+
+local function getCoins(container)
+	local result = {}
+	for _, obj in ipairs(container:GetDescendants()) do
+		if isCoin(obj) and obj.Parent and obj.Transparency < 1 then
+			table.insert(result, obj)
+		end
+	end
+	return result
+end
+
+local function getNearestNewCoin(coins, used)
+	local root = getRoot()
+	if not root then return nil, math.huge end
+
+	local nearest
+	local nearestDistance = math.huge
+
+	for _, coin in ipairs(coins) do
+		if not used[coin] then
+			local d = (root.Position - coin.Position).Magnitude
+			if d < nearestDistance then
+				nearestDistance = d
+				nearest = coin
+			end
+		end
+	end
+
+	return nearest, nearestDistance
+end
+
+local function moveToCoin(targetPosition, token)
+	local root = getRoot()
+	local hum = getHumanoid()
+
+	if not root or not hum or hum.Health <= 0 then return false end
+
+	local distance = (root.Position - targetPosition).Magnitude
+	local duration = math.max(distance / math.clamp(speed, 1, 50), 0.05)
+	local startTime = tick()
+	local startCFrame = root.CFrame
+	local targetCFrame = CFrame.new(targetPosition + Vector3.new(0, 1, 0))
+
+	activeMovement = true
+
+	while activeMovement and farming and token == farmToken do
+		local elapsed = tick() - startTime
+		local alpha = math.clamp(elapsed / duration, 0, 1)
+
+		root.CFrame = startCFrame:Lerp(targetCFrame, alpha)
+		root.AssemblyLinearVelocity = Vector3.zero
+
+		if alpha >= 1 then
+			break
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+
+	activeMovement = nil
+	return true
+end
+
+local function farmLoop(token)
+	local usedCoins = {}
+
+	while farming and token == farmToken do
+		local hum = getHumanoid()
+
+		if not hum or hum.Health <= 0 or not getRoot() then
+			joinedContainer = nil
+			setNoclip(false)
+			task.wait(0.2)
+			continue
+		end
+
+		local container = getCoinContainer()
+
+		if not container or container == ignoredContainer then
+			joinedContainer = nil
+			setNoclip(false)
+			task.wait(0.2)
+			continue
+		end
+
+		if container ~= joinedContainer then
+			joinedContainer = container
+			usedCoins = {}
+			farmedAny = false
+		end
+
+		local coins = getCoins(container)
+
+		if #coins == 0 then
+			if farmedAny then
+				ignoredContainer = nil
+				farmedAny = false
+			end
+			setNoclip(false)
+			task.wait(0.2)
+			continue
+		end
+
+		local coin, dist = getNearestNewCoin(coins, usedCoins)
+
+		if not coin then
+			usedCoins = {}
+			coin, dist = getNearestNewCoin(coins, usedCoins)
+		end
+
+		if coin and coin.Parent then
+			if dist > maxDistance then
+				setNoclip(false)
+				task.wait(0.2)
+				continue
+			end
+
+			usedCoins[coin] = true
+			setNoclip(true)
+
+			if moveToCoin(coin.Position, token) then
+				farmedAny = true
+				totalCoins += 1
+			end
+
+			task.wait(0.01)
+		else
+			task.wait(0.1)
+		end
+	end
+
+	setNoclip(false)
+end
+
+local function useKnife()
+	local char = player.Character
+	if not char then return end
+	local tool = char:FindFirstChildOfClass("Tool")
+	local hum = getHumanoid()
+
+	if not tool and hum then
+		local backpack = player:FindFirstChild("Backpack")
+		if backpack then
+			for _, t in ipairs(backpack:GetChildren()) do
+				if t:IsA("Tool") and (t.Name:lower():find("knife") or t.Name:lower():find("cuchillo") or t.Name:lower():find("murder")) then
+					tool = t
+					hum:EquipTool(tool)
+					task.wait(0.03)
+					break
+				end
+			end
+			if not tool then
+				tool = backpack:FindFirstChildOfClass("Tool")
+				if tool then
+					hum:EquipTool(tool)
+					task.wait(0.03)
+				end
+			end
+		end
+	end
+
+	if tool and tool.Parent == char then
+		tool:Activate()
+	end
+end
+
+local function updateAuraVisual(active)
+	if active then
+		if not auraPart then
+			auraPart = Instance.new("Part")
+			auraPart.Shape = Enum.PartType.Ball
+			auraPart.Size = Vector3.new(killAuraRange * 2, killAuraRange * 2, killAuraRange * 2)
+			auraPart.Transparency = 0.85
+			auraPart.Color = Color3.fromRGB(255, 110, 0)
+			auraPart.Material = Enum.Material.Neon
+			auraPart.CanCollide = false
+			auraPart.Anchored = true
+			auraPart.Parent = workspace
+		end
+	else
+		if auraPart then
+			auraPart:Destroy()
+			auraPart = nil
+		end
+	end
+end
+
+task.spawn(function()
+	while true do
+		pcall(function()
+			if killAuraActive then
+				local root = getRoot()
+				local hum = getHumanoid()
+				if root and hum and hum.Health > 0 then
+					updateAuraVisual(true)
+					if auraPart then
+						auraPart.Size = Vector3.new(killAuraRange * 2, killAuraRange * 2, killAuraRange * 2)
+						auraPart.CFrame = root.CFrame
+					end
+
+					local myPos = root.Position
+					local hitTarget = false
+
+					for _, p in ipairs(Players:GetPlayers()) do
+						if p ~= player and p.Character then
+							local otherRoot = p.Character:FindFirstChild("HumanoidRootPart")
+							local otherHum = p.Character:FindFirstChildOfClass("Humanoid")
+							if otherRoot and otherHum and otherHum.Health > 0 then
+								local dist = (otherRoot.Position - myPos).Magnitude
+								if dist <= killAuraRange then
+									local oldPos = root.CFrame
+									local currentCamCF = camera.CFrame
+									local currentCamType = camera.CameraType
+
+									camera.CameraType = Enum.CameraType.Scriptable
+									camera.CFrame = currentCamCF
+
+									root.CFrame = otherRoot.CFrame * CFrame.new(0, 0, 1.2)
+									useKnife()
+									task.wait(0.03)
+									root.CFrame = oldPos
+
+									camera.CameraType = currentCamType
+									camera.CFrame = currentCamCF
+
+									hitTarget = true
+									break
+								end
+							end
+						end
+					end
+				else
+					updateAuraVisual(false)
+				end
+			else
+				updateAuraVisual(false)
+			end
+		end)
+		task.wait(0.05)
+	end
+end)
+
+local function hookCharacter(char)
+	joinedContainer = nil
+	ignoredContainer = nil
+	local hum = char:WaitForChild("Humanoid", 10)
+
+	if hum then
+		hum.Died:Connect(function()
+			ignoredContainer = nil
+			joinedContainer = nil
+			setNoclip(false)
+			activeMovement = nil
+			updateAuraVisual(false)
+		end)
+	end
+end
+
+if player.Character then
+	task.spawn(hookCharacter, player.Character)
+end
+
+player.CharacterAdded:Connect(hookCharacter)
+
+local function toggleAutofarm(active)
+	farming = active
+	farmToken += 1
+
+	if farming then
+		joinedContainer = nil
+		ignoredContainer = nil
+		local token = farmToken
+		task.spawn(function()
+			farmLoop(token)
+		end)
+	else
+		setNoclip(false)
+		activeMovement = nil
+	end
+end
+
+local function killAllVisual()
+	local startTime = tick()
+	local conn
+	conn = RunService.Heartbeat:Connect(function()
+		if tick() - startTime > 3 then
+			conn:Disconnect()
+			return
+		end
+		local myRoot = getRoot()
+		if not myRoot then return end
+		local myPos = myRoot.Position
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= player and p.Character then
+				local otherRoot = p.Character:FindFirstChild("HumanoidRootPart")
+				local hum = p.Character:FindFirstChildOfClass("Humanoid")
+				if otherRoot and hum and hum.Health > 0 then
+					otherRoot.CFrame = CFrame.new(myPos + Vector3.new(math.random(-3, 3), 0, math.random(-3, 3)))
+				end
+			end
+		end
+	end)
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "1vo_scripts_halloween"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local mainFrame = Instance.new("CanvasGroup")
+mainFrame.Size = UDim2.new(0, 220, 0, 235)
+mainFrame.Position = UDim2.new(0.5, -110, 0.5, -117)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 10, 30)
+mainFrame.Active = true
+mainFrame.Parent = gui
+
+local dragging, dragStart, startPos
+mainFrame.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = mainFrame.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 10)
+mainCorner.Parent = mainFrame
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(255, 110, 0)
+mainStroke.Thickness = 2
+mainStroke.Parent = mainFrame
+
+local bgStripeContainer = Instance.new("Frame")
+bgStripeContainer.Size = UDim2.new(1, 0, 1, 0)
+bgStripeContainer.BackgroundTransparency = 1
+bgStripeContainer.ClipsDescendants = true
+bgStripeContainer.ZIndex = 1
+bgStripeContainer.Parent = mainFrame
+
+local movingStripes = Instance.new("Frame")
+movingStripes.Size = UDim2.new(1, 0, 3, 0)
+movingStripes.Position = UDim2.new(0, 0, -1, 0)
+movingStripes.BackgroundTransparency = 1
+movingStripes.ZIndex = 1
+movingStripes.Parent = bgStripeContainer
+
+local stripeHeight = 20
+local loopHeight = stripeHeight * 2
+local numStripes = math.ceil((235 * 3) / stripeHeight) + 4
+for i = 1, numStripes do
+	local stripe = Instance.new("Frame")
+	stripe.Size = UDim2.new(1, 0, 0, stripeHeight)
+	stripe.Position = UDim2.new(0, 0, 0, (i - 1) * stripeHeight)
+	stripe.BorderSizePixel = 0
+	stripe.ZIndex = 1
+	if i % 2 == 0 then
+		stripe.BackgroundColor3 = Color3.fromRGB(255, 110, 0)
+		stripe.BackgroundTransparency = 0.25
+	else
+		stripe.BackgroundColor3 = Color3.fromRGB(50, 20, 70)
+		stripe.BackgroundTransparency = 0.25
+	end
+	stripe.Parent = movingStripes
+end
+
+task.spawn(function()
+	local offset = 0
+	while gui and gui.Parent do
+		offset = (offset + 0.8) % loopHeight
+		movingStripes.Position = UDim2.new(0, 0, -1, offset)
+		RunService.RenderStepped:Wait()
+	end
+end)
+
+local decoLabel = Instance.new("TextLabel")
+decoLabel.Size = UDim2.new(0, 200, 0, 22)
+decoLabel.Position = UDim2.new(0.5, -100, 0, 8)
+decoLabel.BackgroundColor3 = Color3.fromRGB(10, 5, 15)
+decoLabel.BackgroundTransparency = 0.35
+decoLabel.Text = "🎃🦇 1vo scripts 👻🎃"
+decoLabel.TextColor3 = Color3.fromRGB(255, 150, 0)
+decoLabel.TextSize = 11
+decoLabel.Font = Enum.Font.GothamBold
+decoLabel.ZIndex = 5
+decoLabel.Parent = mainFrame
+
+local decoCorner = Instance.new("UICorner")
+decoCorner.CornerRadius = UDim.new(0.5, 0)
+decoCorner.Parent = decoLabel
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0, 200, 0, 24)
+toggleBtn.Position = UDim2.new(0.5, -100, 0, 34)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 20, 80)
+toggleBtn.Text = "🦇 Autofarm: APAGADO 🦇"
+toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.TextSize = 11
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.ZIndex = 5
+toggleBtn.Parent = mainFrame
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 6)
+toggleCorner.Parent = toggleBtn
+
+toggleBtn.MouseButton1Click:Connect(function()
+	farming = not farming
+	toggleAutofarm(farming)
+	if farming then
+		toggleBtn.Text = "🕸️ Autofarm: ENCENDIDO 🕸️"
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 0)
+	else
+		toggleBtn.Text = "🦇 Autofarm: APAGADO 🦇"
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 20, 80)
+	end
+end)
+
+local speedBox = Instance.new("TextBox")
+speedBox.Size = UDim2.new(0, 200, 0, 24)
+speedBox.Position = UDim2.new(0.5, -100, 0, 62)
+speedBox.BackgroundColor3 = Color3.fromRGB(40, 15, 55)
+speedBox.Text = "⚡ speed: 20 ⚡"
+speedBox.TextColor3 = Color3.fromRGB(255, 180, 0)
+speedBox.TextSize = 11
+speedBox.Font = Enum.Font.GothamBold
+speedBox.ClearTextOnFocus = false
+speedBox.ZIndex = 5
+speedBox.Parent = mainFrame
+
+local speedCorner = Instance.new("UICorner")
+speedCorner.CornerRadius = UDim.new(0, 6)
+speedCorner.Parent = speedBox
+
+speedBox.FocusLost:Connect(function()
+	local num = tonumber(speedBox.Text:match("%d+"))
+	if num then
+		speed = math.clamp(num, 1, 50)
+	else
+		speed = 20
+	end
+	speedBox.Text = "⚡ speed: " .. speed .. " ⚡"
+end)
+
+local killAuraBtn = Instance.new("TextButton")
+killAuraBtn.Size = UDim2.new(0, 200, 0, 24)
+killAuraBtn.Position = UDim2.new(0.5, -100, 0, 90)
+killAuraBtn.BackgroundColor3 = Color3.fromRGB(80, 20, 20)
+killAuraBtn.Text = "⚔️ Kill Aura: APAGADO ⚔️"
+killAuraBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+killAuraBtn.TextSize = 11
+killAuraBtn.Font = Enum.Font.GothamBold
+killAuraBtn.ZIndex = 5
+killAuraBtn.Parent = mainFrame
+
+local killAuraCorner = Instance.new("UICorner")
+killAuraCorner.CornerRadius = UDim.new(0, 6)
+killAuraCorner.Parent = killAuraBtn
+
+killAuraBtn.MouseButton1Click:Connect(function()
+	killAuraActive = not killAuraActive
+	if killAuraActive then
+		killAuraBtn.Text = "⚔️ Kill Aura: ENCENDIDO ⚔️"
+		killAuraBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+	else
+		killAuraBtn.Text = "⚔️ Kill Aura: APAGADO ⚔"
+		killAuraBtn.BackgroundColor3 = Color3.fromRGB(80, 20, 20)
+		updateAuraVisual(false)
+	end
+end)
+
+local rangeBox = Instance.new("TextBox")
+rangeBox.Size = UDim2.new(0, 200, 0, 24)
+rangeBox.Position = UDim2.new(0.5, -100, 0, 118)
+rangeBox.BackgroundColor3 = Color3.fromRGB(50, 15, 30)
+rangeBox.Text = "🎯 range: 25 🎯"
+rangeBox.TextColor3 = Color3.fromRGB(255, 150, 150)
+rangeBox.TextSize = 11
+rangeBox.Font = Enum.Font.GothamBold
+rangeBox.ClearTextOnFocus = false
+rangeBox.ZIndex = 5
+rangeBox.Parent = mainFrame
+
+local rangeCorner = Instance.new("UICorner")
+rangeCorner.CornerRadius = UDim.new(0, 6)
+rangeCorner.Parent = rangeBox
+
+rangeBox.FocusLost:Connect(function()
+	local num = tonumber(rangeBox.Text:match("%d+"))
+	if num then
+		killAuraRange = math.clamp(num, 5, 200)
+	else
+		killAuraRange = 25
+	end
+	rangeBox.Text = "🎯 range: " .. killAuraRange .. " 🎯"
+end)
+
+local killAllBtn = Instance.new("TextButton")
+killAllBtn.Size = UDim2.new(0, 200, 0, 24)
+killAllBtn.Position = UDim2.new(0.5, -100, 0, 146)
+killAllBtn.BackgroundColor3 = Color3.fromRGB(150, 30, 30)
+killAllBtn.Text = "💀 Kill All (3s) 💀"
+killAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+killAllBtn.TextSize = 11
+killAllBtn.Font = Enum.Font.GothamBold
+killAuraBtn.ZIndex = 5
+killAllBtn.Parent = mainFrame
+
+local killAllCorner = Instance.new("UICorner")
+killAllCorner.CornerRadius = UDim.new(0, 6)
+killAllCorner.Parent = killAllBtn
+
+killAllBtn.MouseButton1Click:Connect(function()
+	killAllVisual()
+end)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 200, 0, 24)
+closeBtn.Position = UDim2.new(0.5, -100, 0, 174)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180, 20, 20)
+closeBtn.Text = "👻 Cerrar GUI 👻"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextSize = 11
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.ZIndex = 5
+closeBtn.Parent = mainFrame
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 6)
+closeCorner.Parent = closeBtn
+
+closeBtn.MouseButton1Click:Connect(function()
+	toggleAutofarm(false)
+	killAuraActive = false
+	updateAuraVisual(false)
+	gui:Destroy()
+end)
